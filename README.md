@@ -8,6 +8,10 @@ DroidLens is a Python 3.11+ toolkit for authorized Android reverse engineering a
 
 This project is intentionally designed for meaningful security analysis work, not for malware sandboxing or unsafe automation. It assumes authorized use and emphasizes transparency, deterministic behavior, and a clean analyst workflow.
 
+## Why this project matters
+
+Mobile application security analysis is difficult because APKs and Android runtime artifacts are fragmented across manifest metadata, binary XML, DEX code, native libraries, and runtime instrumentation. DroidLens brings those domains together in a single analyst-facing workflow so a security researcher can move from artifact intake to code understanding to live analysis without losing context.
+
 ## Project goals
 
 - Open APK, DEX, ODEX, OAT, and VDEX-style artifacts
@@ -17,6 +21,17 @@ This project is intentionally designed for meaningful security analysis work, no
 - Drive instrumentation via Frida when live analysis is required
 - Persist analysis in sessions so work can be resumed later
 - Optionally use AI providers for summarization and triage
+
+## Architecture overview
+
+DroidLens is organized around a library-first design and a layered architecture:
+
+- Core API layer for session creation and task orchestration
+- Adapter layer for runtime and third-party parser integration
+- Static analysis modules for APK/DEX/resource inspection
+- Dynamic instrumentation layer for Frida and ADB interaction
+- Session storage layer for resumable, auditable analysis records
+- CLI layer for analyst convenience and reproducible workflows
 
 ## Repository structure
 
@@ -86,7 +101,7 @@ print(summary)
 
 ## Configuration
 
-DroidLens loads layered config from the environment and a user config file, using a default session directory under the user profile. You can override settings through environment variables such as:
+DroidLens loads layered config from the environment and a user config file, using a default session directory under the user profile. You can override settings with environment variables such as:
 
 - DROIDLENS_SESSION_DIR
 - DROIDLENS_WORK_DIR
