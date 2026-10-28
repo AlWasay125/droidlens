@@ -1,32 +1,38 @@
 from __future__ import annotations
 
-import zipfile
 from pathlib import Path
 from typing import Any
 
-
-def list_files(target_path: str | Path, *, so: bool = False, assets: bool = False, limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    """List archive entries (and optional native/asset subsets) from a target APK or directory."""
-
-    path = Path(target_path)
-    if path.is_dir():
-        files = [str(item.relative_to(path)) for item in sorted(path.rglob("*")) if item.is_file()]
-        if so:
-            files = [name for name in files if name.endswith(".so")]
-        if assets:
-            files = [name for name in files if "assets" in name.lower()]
-        return {"path": str(path), "files": files[offset:offset + limit], "count": len(files)}
-
-    if zipfile.is_zipfile(path):
-        with zipfile.ZipFile(path) as zf:
-            files = zf.namelist()
-        if so:
-            files = [name for name in files if name.endswith(".so")]
-        if assets:
-            files = [name for name in files if name.startswith("assets/")]
-        return {"path": str(path), "files": files[offset:offset + limit], "count": len(files)}
-
-    return {"path": str(path), "files": [], "count": 0}
+from droidlens.static.browse import list_files as browse_files
 
 
-__all__ = ["list_files"]
+class DroidLens:
+    def __init__(self, path: str | Path | None = None, session: str | None = None) -> None:
+        self.path = str(path) if path is not None else None
+        self.session = session
+
+    @classmethod
+    def open(cls, path: str | Path, session: str | None = None) -> "DroidLens":
+        return cls(path=path, session=session)
+
+    @classmethod
+    def resume(cls, session: str) -> "DroidLens":
+        return cls(path=None, session=session)
+
+    def info(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "session": self.session,
+        }
+
+    def files(
+        self,
+        *,
+        so: bool = False,
+        assets: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if self.path is None:
+            raise ValueError("No artifact path configured")
+        return browse_files(self.path, so=so, assets=assets, limit=limit, offset=offset)

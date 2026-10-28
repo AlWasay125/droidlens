@@ -1,29 +1,46 @@
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 from typing import Any
 
-from droidlens.formats.apk import inspect_apk
+
+def list_files(
+    target_path: str | Path,
+    *,
+    so: bool = False,
+    assets: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    path = Path(target_path)
+
+    if path.is_dir():
+        files = [str(item.relative_to(path)) for item in sorted(path.rglob("*")) if item.is_file()]
+        if so:
+            files = [name for name in files if name.endswith(".so")]
+        if assets:
+            files = [name for name in files if "assets" in name.lower()]
+        return {
+            "path": str(path),
+            "files": files[offset : offset + limit],
+            "count": len(files),
+        }
+
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as zf:
+            files = zf.namelist()
+        if so:
+            files = [name for name in files if name.endswith(".so")]
+        if assets:
+            files = [name for name in files if name.startswith("assets/")]
+        return {
+            "path": str(path),
+            "files": files[offset : offset + limit],
+            "count": len(files),
+        }
+
+    return {"path": str(path), "files": [], "count": 0}
 
 
-def manifest_summary(apk_path: str | Path) -> dict[str, Any]:
-    """Return a normalized summary of the app manifest and permission set."""
-
-    info = inspect_apk(apk_path)
-    return {
-        "path": info["path"],
-        "package": info["package"],
-        "version_name": info["version_name"],
-        "version_code": info["version_code"],
-        "min_sdk": info["min_sdk"],
-        "target_sdk": info["target_sdk"],
-        "compile_sdk": info["compile_sdk"],
-        "permissions": info["permissions"],
-        "dex_count": info["dex_count"],
-        "so_count": info["so_count"],
-        "asset_count": info["asset_count"],
-        "signature_status": info["signature_status"],
-    }
-
-
-__all__ = ["manifest_summary"]
+__all__ = ["list_files"]
