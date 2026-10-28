@@ -1,15 +1,3 @@
-# .gitignore
-__pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-.venv/
-.env
-.DS_Store
-*.pyc
-*.pyo
-*.egg-info/
-/dist/
-/build/
+# React to issue or not
+
+This file is intentionally left blank.
