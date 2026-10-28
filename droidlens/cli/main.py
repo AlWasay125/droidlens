@@ -1,212 +1,165 @@
 from __future__ import annotations
 
-import json
-import sqlite3
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-SCHEMA_SQL = """
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-
-CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    mode TEXT NOT NULL,
-    target_path TEXT NOT NULL,
-    target_sha256 TEXT NOT NULL,
-    package TEXT,
-    version_name TEXT,
-    version_code TEXT,
-    notes TEXT
-);
-
-CREATE TABLE IF NOT EXISTS targets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    path TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    size INTEGER,
-    imported_at TEXT NOT NULL,
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
-);
-
-CREATE TABLE IF NOT EXISTS artifacts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    name TEXT NOT NULL,
-    path TEXT NOT NULL,
-    sha256 TEXT,
-    meta_json TEXT DEFAULT '{}',
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
-);
-
-CREATE TABLE IF NOT EXISTS findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    category TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    title TEXT NOT NULL,
-    evidence TEXT NOT NULL,
-    evidence_refs_json TEXT DEFAULT '[]',
-    masvs_id TEXT,
-    source TEXT,
-    confidence TEXT DEFAULT 'medium',
-    status TEXT DEFAULT 'open',
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
-);
-
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    ts TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    action TEXT NOT NULL,
-    payload_json TEXT DEFAULT '{}',
-    FOREIGN KEY(session_id) REFERENCES sessions(id)
-);
-"""
+from droidlens.adapters.detect import detect_backend
+from droidlens.config import load_config
+from droidlens.errors import SessionNotFoundError
+from droidlens.formats.apk import decode_arsc, decode_axml, extract_strings_from_path, inspect_apk, list_archive_files
+from droidlens.session.store import SessionStore
+from droidlens.static.browse import list_files
+from droidlens.static.manifest import manifest_summary
 
 
-class SessionStore:
-    """SQLite-backed session store for droidlens analysis runs."""
+def sha256_file(path: str | Path) -> str:
+    """Hash a file on disk using SHA-256."""
 
-    def __init__(self, base_dir: str | Path) -> None:
-        self.base_dir = Path(base_dir).expanduser()
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path = self.base_dir / "session.db"
-        self._conn = sqlite3.connect(self.db_path)
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA foreign_keys=ON;")
-        self._conn.executescript(SCHEMA_SQL)
-        self._conn.commit()
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    def create_session(
+
+class DroidLens:
+    """Library-first app session object for static and dynamic analysis."""
+
+    def __init__(
         self,
-        *,
-        name: str,
-        mode: str,
-        target_path: str,
-        target_sha256: str,
-        package: str | None,
-        version_name: str | None,
-        version_code: str | None,
-        notes: str | None,
-    ) -> str:
-        session_id = f"session-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{abs(hash(name)) % 1000000}"
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            """
-            INSERT INTO sessions
-            (id, name, created_at, updated_at, mode, target_path, target_sha256, package, version_name, version_code, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                name,
-                now,
-                now,
-                mode,
-                target_path,
-                target_sha256,
-                package,
-                version_name,
-                version_code,
-                notes,
-            ),
+        target_path: str | Path,
+        session_name: str | None = None,
+        work_dir: str | None = None,
+        session_store: SessionStore | None = None,
+        backend: Any | None = None,
+    ) -> None:
+        self.config = load_config()
+        self.target_path = Path(target_path).expanduser().resolve()
+        self.session_store = session_store or SessionStore(work_dir or self.config["work_dir"] or self.config["session_dir"])
+        self.backend = backend or detect_backend()
+        self.session_name = session_name or self.target_path.stem
+        self.session_id = ""
+
+    @classmethod
+    def open(cls, path: str, session: str | None = None, work_dir: str | None = None) -> "DroidLens":
+        """Open a target artifact and create or resume a session."""
+
+        config = load_config()
+        resolved_work_dir = work_dir or config["work_dir"] or config["session_dir"]
+        store = SessionStore(resolved_work_dir)
+        target_path = Path(path).expanduser().resolve()
+        target_hash = sha256_file(target_path)
+
+        existing = store.find_by_target_hash(target_hash)
+        if existing is not None:
+            instance = cls(target_path, session_name=existing["name"], work_dir=resolved_work_dir)
+            instance.session_id = existing["id"]
+            instance.session_name = existing["name"]
+            instance.config = config
+            return instance
+
+        created_name = session or f"{target_path.stem}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+        session_id = store.create_session(
+            name=created_name,
+            mode=config["default_mode"],
+            target_path=str(target_path),
+            target_sha256=target_hash,
+            package=None,
+            version_name=None,
+            version_code=None,
+            notes=None,
         )
-        self._conn.execute(
-            "INSERT INTO events (session_id, ts, actor, action, payload_json) VALUES (?, ?, ?, ?, ?)",
-            (session_id, now, "system", "session_created", json.dumps({"name": name})),
-        )
-        self._conn.commit()
-        return session_id
+        instance = cls(target_path, session_name=created_name, work_dir=resolved_work_dir)
+        instance.session_id = session_id
+        return instance
 
-    def list_sessions(self) -> list[dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT id, name, created_at, updated_at, mode, target_path, target_sha256, package, version_name, version_code, notes FROM sessions ORDER BY created_at DESC"
-        ).fetchall()
-        return [
-            {
-                "id": row[0],
-                "name": row[1],
-                "created_at": row[2],
-                "updated_at": row[3],
-                "mode": row[4],
-                "target_path": row[5],
-                "target_sha256": row[6],
-                "package": row[7],
-                "version_name": row[8],
-                "version_code": row[9],
-                "notes": row[10],
-            }
-            for row in rows
-        ]
+    @classmethod
+    def resume(cls, session_name: str, work_dir: str | None = None) -> "DroidLens":
+        """Resume a known session by name."""
 
-    def get_session(self, session_id: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT id, name, created_at, updated_at, mode, target_path, target_sha256, package, version_name, version_code, notes FROM sessions WHERE id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_record(row)
+        config = load_config()
+        resolved_work_dir = work_dir or config["work_dir"] or config["session_dir"]
+        store = SessionStore(resolved_work_dir)
+        record = store.get_session_by_name(session_name)
+        if record is None:
+            raise SessionNotFoundError(f"Session '{session_name}' was not found")
 
-    def get_session_by_name(self, name: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT id, name, created_at, updated_at, mode, target_path, target_sha256, package, version_name, version_code, notes FROM sessions WHERE name = ?",
-            (name,),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_record(row)
+        instance = cls(record["target_path"], session_name=record["name"], work_dir=resolved_work_dir)
+        instance.session_id = record["id"]
+        return instance
 
-    def find_by_target_hash(self, target_hash: str) -> dict[str, Any] | None:
-        row = self._conn.execute(
-            "SELECT id, name, created_at, updated_at, mode, target_path, target_sha256, package, version_name, version_code, notes FROM sessions WHERE target_sha256 = ? LIMIT 1",
-            (target_hash,),
-        ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_record(row)
+    def info(self) -> dict[str, Any]:
+        """Return a minimal summary for the active target and session."""
 
-    def note_session(self, session_id: str, notes: str) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
-            "UPDATE sessions SET notes = ?, updated_at = ? WHERE id = ?",
-            (notes, now, session_id),
-        )
-        self._conn.execute(
-            "INSERT INTO events (session_id, ts, actor, action, payload_json) VALUES (?, ?, ?, ?, ?)",
-            (session_id, now, "system", "session_note", json.dumps({"notes": notes})),
-        )
-        self._conn.commit()
-
-    @staticmethod
-    def _row_to_record(row: tuple[Any, ...]) -> dict[str, Any]:
+        backend_name = getattr(self.backend, "name", self.backend.__class__.__name__ if self.backend is not None else "unset")
+        manifest = self.manifest_summary()
         return {
-            "id": row[0],
-            "name": row[1],
-            "created_at": row[2],
-            "updated_at": row[3],
-            "mode": row[4],
-            "target_path": row[5],
-            "target_sha256": row[6],
-            "package": row[7],
-            "version_name": row[8],
-            "version_code": row[9],
-            "notes": row[10],
+            "id": self.session_id,
+            "name": self.session_name,
+            "target": str(self.target_path),
+            "backend": backend_name,
+            "package": manifest.get("package"),
+            "version_name": manifest.get("version_name"),
+            "version_code": manifest.get("version_code"),
+            "permissions": manifest.get("permissions", []),
         }
 
+    def manifest_summary(self) -> dict[str, Any]:
+        """Return manifest and package metadata for the opened target."""
+
+        return manifest_summary(self.target_path)
+
+    def files(self, *, so: bool = False, assets: bool = False, limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        """List files in the APK or directory target."""
+
+        return list_files(self.target_path, so=so, assets=assets, limit=limit, offset=offset)
+
+    def certs(self) -> list[dict[str, Any]]:
+        """Return the certificate metadata found in META-INF blocks."""
+
+        return inspect_apk(self.target_path)["certs"]
+
+    def strings(self, *, min_len: int = 4, entropy: bool = False) -> list[str]:
+        """Return printable strings found in the target artifact."""
+
+        return extract_strings_from_path(self.target_path, min_len=min_len, entropy=entropy)
+
+    def resources(self, *, type_filter: str | None = None, grep: str | None = None) -> dict[str, Any]:
+        """Return a best-effort decode of resource data."""
+
+        info = inspect_apk(self.target_path)
+        payload: dict[str, Any] = {"path": str(self.target_path), "resources": []}
+        for entry in info["files"]:
+            lower = entry.lower()
+            if lower.endswith("resources.arsc"):
+                with Path(self.target_path).open("rb") as handle:
+                    data = handle.read() if Path(self.target_path).is_file() else b""
+                if not data:
+                    continue
+                decoded = decode_arsc(Path(self.target_path))
+                payload["resources"] = decoded.get("entries", [])
+        if grep:
+            payload["resources"] = [item for item in payload["resources"] if grep.lower() in str(item).lower()]
+        if type_filter:
+            payload["type_filter"] = type_filter
+        return payload
+
+    def axml(self, path: str | Path) -> dict[str, Any]:
+        """Decode XML data from a path, if present."""
+
+        return decode_axml(path)
+
+    def manifest(self) -> dict[str, Any]:
+        """Compatibility wrapper for manifest summary."""
+
+        return self.manifest_summary()
+
     def close(self) -> None:
-        self._conn.close()
+        """Close the session object; no-op for this scaffold."""
+
+        return None
 
 
-__all__ = ["SessionStore"]
+__all__ = ["DroidLens", "sha256_file"]
