@@ -8,7 +8,7 @@ from droidlens.errors import BackendNotAvailableError
 
 
 class AgV5Backend(AndroguardBackend):
-    """Adapter targeting Androguard v5 / current API."""
+    """Adapter targeting the Androguard v5 API."""
 
     name = "androguard_v5"
 
@@ -38,13 +38,13 @@ class AgV5Backend(AndroguardBackend):
         return []
 
     def get_bytecode(self, class_name: str, method: str) -> Any:
-        return {}
+        return {"class": class_name, "method": method}
 
     def disassemble(self, class_name: str, method: str) -> str:
-        return f"// {class_name}::{method} (stubbed disassembly for v5 backend)"
+        return f"// {class_name}::{method} (stub disassembly for v5 backend)"
 
     def decompile(self, class_name: str, method: str) -> str:
-        return f"// {class_name}::{method} (decompile unavailable in stub backend)"
+        return f"// {class_name}::{method} (stub decompilation for v5 backend)"
 
     def xrefs(self, kind: str, ref: str) -> list[str]:
         return []

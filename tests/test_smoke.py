@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -10,7 +8,6 @@ from rich.table import Table
 
 from droidlens import __version__
 from droidlens.core import DroidLens
-from droidlens.errors import DroidLensError
 from droidlens.session.store import SessionStore
 
 app = typer.Typer(add_completion=False, help="Adaptive Android Reverse-Engineering & Pentest Workbench")
@@ -20,13 +17,13 @@ console = Console()
 @app.callback()
 def callback(
     ctx: typer.Context,
-    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON output."),
-    session: str | None = typer.Option(None, "--session", help="Select a session by id or name."),
-    work_dir: str | None = typer.Option(None, "--work-dir", help="Override the work directory."),
+    json_output: bool = typer.Option(False, "--json", help="Emit JSON output."),
+    session: str | None = typer.Option(None, "--session", help="Session ID or name."),
+    work_dir: str | None = typer.Option(None, "--work-dir", help="Path to a working directory."),
     quiet: bool = typer.Option(False, "--quiet", help="Suppress nonessential output."),
-    no_color: bool = typer.Option(False, "--no-color", help="Disable ANSI colors."),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colorized output."),
 ) -> None:
-    """Global options."""
+    """Global options shared by all commands."""
 
     ctx.obj = {
         "json": json_output,
@@ -39,7 +36,7 @@ def callback(
 
 @app.command()
 def version() -> None:
-    """Print the droidlens version and authorized-use banner."""
+    """Print the package version and authorized-use banner."""
 
     typer.echo("Authorized use only.")
     typer.echo(f"droidlens v{__version__}")
@@ -48,42 +45,28 @@ def version() -> None:
 @app.command("open")
 def open_cmd(
     path: str,
-    name: str | None = typer.Option(None, "--name", help="Session name."),
+    name: str | None = typer.Option(None, "--name", help="Override the session name."),
     mode: str = typer.Option("static", "--mode", help="Execution mode."),
 ) -> None:
-    """Open a target artifact and create or resume a session."""
+    """Open an APK/DEX/ODEX/dir target and create or resume a session."""
 
-    try:
-        dl = DroidLens.open(path, session=name, work_dir=None)
-        info = dl.info()
-        if typer.get_app_dir("droidlens"):
-            pass
-        if name:
-            print(f"Session: {name}")
-        print(f"Target: {path}")
-        print(f"Mode: {mode}")
-        print(f"Session ID: {dl.session_id}")
-        print(f"Package: {info.get('package') or 'unknown'}")
-        print(f"Version: {info.get('version_name') or 'unknown'}")
-    except Exception as exc:  # pragma: no cover - defensive CLI surface
-        raise typer.Exit(code=1) from exc
+    dl = DroidLens.open(path, session=name)
+    payload = dl.info()
+    payload["mode"] = mode
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
 
 
 @app.command("info")
-def info_cmd(
-    session: str | None = typer.Option(None, "--session", help="Session name or id."),
-) -> None:
-    """Print the current session information."""
+def info_cmd() -> None:
+    """Print summary information for the active default session."""
 
-    if session is None:
-        session = "default"
-    dl = DroidLens.resume(session)
-    typer.echo(json.dumps(dl.info(), indent=2, sort_keys=True))
+    default = DroidLens.open(".")
+    typer.echo(json.dumps(default.info(), indent=2, sort_keys=True))
 
 
 @app.command("sessions")
 def sessions_cmd() -> None:
-    """List known sessions."""
+    """List all known sessions."""
 
     store = SessionStore("~/.droidlens/sessions")
     rows = store.list_sessions()
@@ -110,7 +93,7 @@ def resume_cmd(session: str) -> None:
 
 @app.command("note")
 def note_cmd(session: str, text: str) -> None:
-    """Add notes to a session."""
+    """Update notes for a session."""
 
     store = SessionStore("~/.droidlens/sessions")
     record = store.get_session_by_name(session)
