@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "droidlens"
+version = "0.1.0"
+description = "Adaptive Android Reverse-Engineering & Pentest Workbench"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "AlWasay125" }]
+license = { text = "MIT" }
+dependencies = [
+  "androguard>=4.1.4; extra == 'ag4'",
+  "typer>=0.12.0",
+  "rich>=13.0.0",
+  "pydantic>=2.8.0",
+  "httpx>=0.27.0",
+  "jinja2>=3.1.0",
+  "pyelftools>=0.31.0",
+  "google-genai>=1.0.0",
+  "platformdirs>=4.0.0",
+  "tomli-w>=1.0.0",
+  "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+frida = ["frida>=16.0.0", "frida-tools>=12.0.0"]
+yara = ["yara-python>=4.0.0"]
+dev = [
+  "pytest>=8.0.0",
+  "mypy>=1.10.0",
+  "ruff>=0.5.0",
+  "coverage>=7.0.0",
+  "black>=24.0.0",
+]
+full = [
+  "droidlens[frida]",
+  "droidlens[yara]",
+]
+
+[project.scripts]
+droidlens = "droidlens.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["droidlens"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 88
+
+[tool.black]
+line-length = 88
